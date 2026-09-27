@@ -1,4 +1,4 @@
-#!/usr/init/env python3
+#!/usr/bin/env python3
 import os
 import subprocess
 import sys
@@ -71,73 +71,57 @@ def main():
 
     check_docker()
 
-    # 2. Automatically detect and assign available ports for API and Frontend
+    # 2. Automatically detect and assign available ports for App and Database
     print("\n🔍 Checking port availability...")
-    api_port = find_available_port(8000)
-    frontend_port = find_available_port(5173)
+    app_port = find_available_port(8000)
 
-    if api_port != 8000:
-        print(f"⚠️ Port 8000 is in use. Assigned API port: {api_port}")
+    if app_port != 8000:
+        print(f"⚠️ Port 8000 is in use. Assigned App port: {app_port}")
     else:
-        print(f"✔ API port 8000 is available.")
-
-    if frontend_port != 5173:
-        print(f"⚠️ Port 5173 is in use. Assigned Frontend port: {frontend_port}")
-    else:
-        print(f"✔ Frontend port 5173 is available.")
+        print(f"✔ App port 8000 is available.")
 
     print(f"\n📂 Creating project directories for '{project_name}'...")
     docker_php_dir = root_dir / "docker" / "php"
     backend_dir = root_dir / "backend"
-    frontend_dir = root_dir / "frontend"
-    frontend_src_dir = frontend_dir / "src"
 
     docker_php_dir.mkdir(parents=True, exist_ok=True)
     backend_dir.mkdir(parents=True, exist_ok=True)
-    frontend_src_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. Write docker/php/Dockerfile
+    # 3. Write docker/php/Dockerfile (Node + PHP 8.4 setup for Inertia/Vite compiling inside container)
     print("Creating docker/php/Dockerfile...")
     dockerfile_content = """FROM php:8.4-cli-bookworm
 RUN apt-get update \\
     && apt-get install -y --no-install-recommends \\
-       git unzip libicu-dev libonig-dev libpq-dev libzip-dev \\
+       git unzip libicu-dev libonig-dev libpq-dev libzip-dev curl \\
     && docker-php-ext-install \\
        bcmath intl mbstring pdo_pgsql zip \\
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (LTS) for building Vite / shadcn-vue assets
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
+    && apt-get install -y nodejs
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /app
 """
     (docker_php_dir / "Dockerfile").write_text(dockerfile_content)
 
-    # 4. Write compose.yaml using the dynamically assigned ports and sanitized db name
+    # 4. Write compose.yaml for Laravel + PostgreSQL + Vite Hot Module Reload
     print("Creating compose.yaml...")
     compose_content = f"""services:
-  api:
+  app:
     build:
       context: ./docker/php
     working_dir: /app
     volumes:
       - ./backend:/app
     ports:
-      - "{api_port}:8000"
+      - "{app_port}:8000"
+      - "5173:5173"
     command: php artisan serve --host=0.0.0.0 --port=8000
     depends_on:
       db:
         condition: service_healthy
-
-  frontend:
-    image: node:22-alpine
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - frontend_node_modules:/app/node_modules
-    ports:
-      - "{frontend_port}:5173"
-    command: npm run dev -- --host 0.0.0.0
-    depends_on:
-      - api
 
   db:
     image: postgres:17-alpine
@@ -155,30 +139,35 @@ WORKDIR /app
 
 volumes:
   postgres_data:
-  frontend_node_modules:
 """
     (root_dir / "compose.yaml").write_text(compose_content)
 
-    # 5. Build API container & Generate Laravel 12
-    print("\n🚀 Building API container and generating Laravel 12 project...")
-    run_cmd(["docker", "compose", "build", "api"], cwd=root_dir)
-    run_cmd(["docker", "compose", "run", "--rm", "--no-deps", "api", "composer", "create-project", "laravel/laravel:^12.0", "."], cwd=root_dir)
+    # 5. Build Container & Scaffold Official Laravel Vue Starter Kit via Composer
+    print("\n🚀 Building app container and scaffolding Laravel 12 + Vue 3 starter kit...")
+    run_cmd(["docker", "compose", "build", "app"], cwd=root_dir)
+    
+    # Create fresh Laravel project skeleton
+    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "create-project", "laravel/laravel:^12.0", "."], cwd=root_dir)
+    
+    # Install Laravel Vue Starter Kit (Inertia + Vue 3 + Tailwind + shadcn-vue baseline)
+    print("\n📦 Installing Laravel Vue Starter Kit dependencies...")
+    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "require", "laravel/breeze", "--dev"], cwd=root_dir)
+    run_cmd(["docker", "compose", "run", "--rm", "app", "php", "artisan", "breeze:install", "vue", "--no-interaction"], cwd=root_dir)
 
-    # 6. Configure backend/.env
+    # 6. Configure backend/.env with robust database connection parameters
     print("Configuring backend/.env...")
     env_file = backend_dir / ".env"
     if env_file.exists():
         env_content = env_file.read_text()
         
-        # Strip out any existing DB_ configuration lines to prevent duplicates
+        # Clear out default values and inject Docker config reliably
         lines = []
         for line in env_content.splitlines():
             if not line.startswith(("DB_CONNECTION", "DB_HOST", "DB_PORT", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD", "APP_URL")):
                 lines.append(line)
         
-        # Append clean, correct Docker PostgreSQL configuration
         clean_env = "\n".join(lines) + f"""
-APP_URL=http://localhost:{api_port}
+APP_URL=http://localhost:{app_port}
 
 DB_CONNECTION=pgsql
 DB_HOST=db
@@ -189,112 +178,21 @@ DB_PASSWORD=local_dev_password
 """
         env_file.write_text(clean_env.strip() + "\n")
 
-    # 7. Scaffold Vue 2 Frontend
-    print("\n📦 Initializing and configuring Vue 2.7 frontend...")
-    run_cmd(["docker", "compose", "run", "--rm", "--no-deps", "frontend", "npm", "init", "-y"], cwd=root_dir)
-    run_cmd(["docker", "compose", "run", "--rm", "--no-deps", "frontend", "npm", "install", "vue@2.7.16"], cwd=root_dir)
-    run_cmd(["docker", "compose", "run", "--rm", "--no-deps", "frontend", "npm", "install", "-D", "vite@6", "@vitejs/plugin-vue2@2.3.3"], cwd=root_dir)
-    run_cmd(["docker", "compose", "run", "--rm", "--no-deps", "frontend", "npm", "pkg", "set", "type=module", "scripts.dev=vite", "scripts.build=vite build"], cwd=root_dir)
-
-    # Write frontend/vite.config.js
-    print("Creating frontend/vite.config.js...")
-    vite_config = """import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue2'
-
-export default defineConfig({
-  plugins: [vue()],
-  server: {
-    proxy: {
-      '/api': 'http://api:8000',
-    },
-  },
-})
-"""
-    (frontend_dir / "vite.config.js").write_text(vite_config)
-
-    # Write frontend/index.html
-    print("Creating frontend/index.html...")
-    index_html = f"""<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{project_name}</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.js"></script>
-  </body>
-</html>
-"""
-    (frontend_dir / "index.html").write_text(index_html)
-
-    # Write frontend/src/main.js
-    print("Creating frontend/src/main.js...")
-    main_js = """import Vue from 'vue'
-import App from './App.vue'
-
-new Vue({
-  render: (h) => h(App),
-}).$mount('#app')
-"""
-    (frontend_src_dir / "main.js").write_text(main_js)
-
-    # Write frontend/src/App.vue
-    print("Creating frontend/src/App.vue...")
-    app_vue = """<template>
-  <main>
-    <h1>App Prototype</h1>
-    <p>API status: {{ apiStatus }}</p>
-  </main>
-</template>
-
-<script>
-export default {
-  data() {
-    return { apiStatus: 'Checking…' }
-  },
-
-  async mounted() {
-    try {
-      const response = await fetch('/api/health')
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-      const result = await response.json()
-      this.apiStatus = result.status
-    } catch (error) {
-      this.apiStatus = `Unavailable: ${error.message}`
-    }
-  },
-}
-</script>
-"""
-    (frontend_src_dir / "App.vue").write_text(app_vue)
-
-    # 8. Start Stack & Initialize API/Migrations
-    print("\n🐳 Ensuring a clean stack and starting Docker containers...")
-    run_cmd(["docker", "compose", "down", "-v", "--remove-orphans"], cwd=root_dir, check=False)
+    # 7. Start Stack & Initialize Migrations and Node Build Assets
+    print("\n🐳 Starting Docker containers and running database migrations...")
     run_cmd(["docker", "compose", "up", "-d"], cwd=root_dir)
 
-    print("\nInstalling API configuration...")
-    run_cmd(["docker", "compose", "exec", "api", "php", "artisan", "install:api", "--no-interaction"], cwd=root_dir, check=False)
-
     print("\nRunning database migrations with auto-retry...")
-    run_cmd_with_retry(["docker", "compose", "exec", "api", "php", "artisan", "migrate", "--no-interaction"], cwd=root_dir)
+    run_cmd_with_retry(["docker", "compose", "exec", "app", "php", "artisan", "migrate", "--no-interaction"], cwd=root_dir)
 
-    # 9. Add health route to backend/routes/api.php
-    print("Adding health check route to backend/routes/api.php...")
-    api_routes_path = backend_dir / "routes" / "api.php"
-    if api_routes_path.exists():
-        route_content = api_routes_path.read_text()
-        health_route = "\nRoute::get('/health', fn () => response()->json(['status' => 'ok']));\n"
-        if "health" not in route_content:
-            api_routes_path.write_text(route_content + health_route)
+    print("\nInstalling frontend packages and building assets via npm inside container...")
+    run_cmd(["docker", "compose", "exec", "app", "npm", "install"], cwd=root_dir)
+    run_cmd(["docker", "compose", "exec", "app", "npm", "run", "build"], cwd=root_dir)
 
-    print(f"\n✨ Success! Your project '{project_name}' has been successfully scaffolded.")
+    print(f"\n✨ Success! Your modern Vue 3 + Laravel project '{project_name}' has been successfully scaffolded.")
     print(f"👉 Cd into your project: cd {project_slug}")
-    print(f"🌍 Frontend URL: http://localhost:{frontend_port}")
-    print(f"🔌 API URL: http://localhost:{api_port}")
+    print(f"🌍 Application URL: http://localhost:{app_port}")
+    print(f"💡 To run frontend hot-reloading development assets: docker compose exec app npm run dev")
 
 if __name__ == "__main__":
     main()
