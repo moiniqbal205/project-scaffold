@@ -4,6 +4,7 @@ import subprocess
 import sys
 import socket
 import time
+import re
 from pathlib import Path
 
 def find_available_port(start_port):
@@ -47,7 +48,6 @@ def check_docker():
         res = subprocess.run(["docker", "info"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if res.returncode != 0:
             print("\n❌ Error: Docker daemon is not running.")
-            print("Please open Docker Desktop and wait for it to start, then re-run this script.")
             sys.exit(1)
         print("✔ Docker is running.")
     except (subprocess.SubprocessError, FileNotFoundError):
@@ -55,13 +55,18 @@ def check_docker():
         sys.exit(1)
 
 def main():
-    # 1. Prompt for Project Name
+    # 1. Prompt and strictly validate Project Name
     project_name = input("Enter project name (e.g., my-prototype): ").strip()
     if not project_name:
         print("Project name cannot be empty.")
         sys.exit(1)
 
-    project_slug = project_name.lower().replace(" ", "-")
+    # Strip invalid characters to prevent path/compose injection
+    project_slug = re.sub(r'[^a-z0-9]+', '-', project_name.lower()).strip('-')
+    if not project_slug:
+        print("❌ Error: Invalid project name. Please use alphanumeric characters.")
+        sys.exit(1)
+
     db_name = project_slug.replace("-", "_")
     root_dir = Path(project_slug)
 
@@ -71,23 +76,22 @@ def main():
 
     check_docker()
 
-    # 2. Automatically detect and assign available ports for App and Database
+    # 2. Automatically detect and assign available ports for App and Vite
     print("\n🔍 Checking port availability...")
     app_port = find_available_port(8000)
+    vite_port = find_available_port(5173)
 
-    if app_port != 8000:
-        print(f"⚠️ Port 8000 is in use. Assigned App port: {app_port}")
-    else:
-        print(f"✔ App port 8000 is available.")
+    print(f"✔ App port assigned: {app_port}")
+    print(f"✔ Vite port assigned: {vite_port}")
 
-    print(f"\n📂 Creating project directories for '{project_name}'...")
+    print(f"\n📂 Creating project directories for '{project_slug}'...")
     docker_php_dir = root_dir / "docker" / "php"
     backend_dir = root_dir / "backend"
 
     docker_php_dir.mkdir(parents=True, exist_ok=True)
     backend_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. Write docker/php/Dockerfile (Node + PHP 8.4 setup for Inertia/Vite compiling inside container)
+    # 3. Write docker/php/Dockerfile
     print("Creating docker/php/Dockerfile...")
     dockerfile_content = """FROM php:8.4-cli-bookworm
 RUN apt-get update \\
@@ -97,7 +101,6 @@ RUN apt-get update \\
        bcmath intl mbstring pdo_pgsql zip \\
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js (LTS) for building Vite / shadcn-vue assets
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
     && apt-get install -y nodejs
 
@@ -106,7 +109,7 @@ WORKDIR /app
 """
     (docker_php_dir / "Dockerfile").write_text(dockerfile_content)
 
-    # 4. Write compose.yaml for Laravel + PostgreSQL + Vite Hot Module Reload
+    # 4. Write compose.yaml using identical Vite port mapping for HMR stability
     print("Creating compose.yaml...")
     compose_content = f"""services:
   app:
@@ -117,7 +120,7 @@ WORKDIR /app
       - ./backend:/app
     ports:
       - "{app_port}:8000"
-      - "5173:5173"
+      - "{vite_port}:{vite_port}"
     command: php artisan serve --host=0.0.0.0 --port=8000
     depends_on:
       db:
@@ -142,32 +145,35 @@ volumes:
 """
     (root_dir / "compose.yaml").write_text(compose_content)
 
-    # 5. Build Container & Scaffold Official Laravel Vue Starter Kit via Composer
-    print("\n🚀 Building app container and scaffolding Laravel 12 + Vue 3 starter kit...")
+    # 5. Build Container & Clone the Official Laravel Vue Starter Kit
+    print("\n🚀 Building app container and installing Laravel Vue Starter Kit...")
     run_cmd(["docker", "compose", "build", "app"], cwd=root_dir)
     
-    # Create fresh Laravel project skeleton
-    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "create-project", "laravel/laravel:^12.0", "."], cwd=root_dir)
-    
-    # Install Laravel Vue Starter Kit (Inertia + Vue 3 + Tailwind + shadcn-vue baseline)
-    print("\n📦 Installing Laravel Vue Starter Kit dependencies...")
-    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "require", "laravel/breeze", "--dev"], cwd=root_dir)
-    run_cmd(["docker", "compose", "run", "--rm", "app", "php", "artisan", "breeze:install", "vue", "--no-interaction"], cwd=root_dir)
+    # We use the new official Vue starter kit which includes shadcn-vue and Inertia directly
+    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "create-project", "laravel/vue-starter-kit", "."], cwd=root_dir)
 
-    # 6. Configure backend/.env with robust database connection parameters
+    # 6. Configure backend/.env
     print("Configuring backend/.env...")
     env_file = backend_dir / ".env"
+    env_example = backend_dir / ".env.example"
+
+    # Ensure .env exists if starter kit only created .env.example
+    if not env_file.exists() and env_example.exists():
+        env_file.write_text(env_example.read_text())
+
     if env_file.exists():
         env_content = env_file.read_text()
         
-        # Clear out default values and inject Docker config reliably
-        lines = []
-        for line in env_content.splitlines():
-            if not line.startswith(("DB_CONNECTION", "DB_HOST", "DB_PORT", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD", "APP_URL")):
-                lines.append(line)
+        # Strip out ALL existing active or commented DB_ and APP_URL lines
+        clean_lines = [
+            line for line in env_content.splitlines()
+            if not re.match(r'^\s*#?\s*(DB_|APP_URL=|VITE_PORT=)', line)
+        ]
         
-        clean_env = "\n".join(lines) + f"""
+        # Append clean, explicit Docker settings
+        docker_env_block = f"""
 APP_URL=http://localhost:{app_port}
+VITE_PORT={vite_port}
 
 DB_CONNECTION=pgsql
 DB_HOST=db
@@ -176,7 +182,8 @@ DB_DATABASE={db_name}
 DB_USERNAME={db_name}
 DB_PASSWORD=local_dev_password
 """
-        env_file.write_text(clean_env.strip() + "\n")
+        final_env = "\n".join(clean_lines).strip() + "\n" + docker_env_block
+        env_file.write_text(final_env)
 
     # 7. Start Stack & Initialize Migrations and Node Build Assets
     print("\n🐳 Starting Docker containers and running database migrations...")
@@ -189,10 +196,10 @@ DB_PASSWORD=local_dev_password
     run_cmd(["docker", "compose", "exec", "app", "npm", "install"], cwd=root_dir)
     run_cmd(["docker", "compose", "exec", "app", "npm", "run", "build"], cwd=root_dir)
 
-    print(f"\n✨ Success! Your modern Vue 3 + Laravel project '{project_name}' has been successfully scaffolded.")
+    print(f"\n✨ Success! Your modern Vue 3 + Laravel project '{project_slug}' has been successfully scaffolded.")
     print(f"👉 Cd into your project: cd {project_slug}")
     print(f"🌍 Application URL: http://localhost:{app_port}")
-    print(f"💡 To run frontend hot-reloading development assets: docker compose exec app npm run dev")
+    print(f"💡 To run hot-reloading frontend assets: docker compose exec app npm run dev -- --host 0.0.0.0 --port {vite_port}")
 
 if __name__ == "__main__":
     main()
