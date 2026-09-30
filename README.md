@@ -1,6 +1,6 @@
 # Project Scaffold
 
-A robust, automated CLI-based scaffolding tool that provisions a fully-containerized modern web development environment combining **Laravel 12 (PHP 8.4)**, **PostgreSQL 17**, and **Vue 3 with Inertia.js, Tailwind CSS, and shadcn-vue** using **Docker Compose**.
+A robust, automated CLI-based scaffolding tool that provisions a fully-containerized modern web development environment combining **Laravel 12 (PHP 8.4)**, **PostgreSQL 17**, and **Vue 3 (TypeScript) with Inertia.js, Tailwind CSS, and shadcn-vue** using **Docker Compose**.
 
 ---
 
@@ -8,7 +8,7 @@ A robust, automated CLI-based scaffolding tool that provisions a fully-container
 
 - **Full-Stack Application:** Laravel 12 monolith running on PHP 8.4 CLI with server-side routing via **Inertia.js**.
 - **Database:** PostgreSQL 17 optimized with container health checks and automatic persistent volume mapping.
-- **Frontend Ecosystem:** Vue 3, Vite, Tailwind CSS, pre-configured with the **shadcn-vue** component library setup.
+- **Frontend Ecosystem:** Vue 3 (TypeScript), Vite, Tailwind CSS, pre-configured with the **shadcn-vue** component library setup.
 - **Orchestration:** Docker & Docker Compose with dynamic application and Vite port allocation.
 
 ---
@@ -34,8 +34,8 @@ A robust, automated CLI-based scaffolding tool that provisions a fully-container
 4. The script will automatically:
 * Scan for available localhost ports for the app and Vite.
 * Generate the isolated project structure.
-* Build the Docker images and clone the official Laravel Vue Starter Kit into `./app`.
-* Configure local development environment variables (including local database credentials).
+* Build Docker images and clone `laravel/vue-starter-kit` (pinned to `v1.0.2`) into `./app`.
+* Configure local development environment variables, verify `APP_KEY`, and update `app/vite.config.ts` for Docker HMR support.
 * Run database migrations and compile initial build assets.
 
 
@@ -48,7 +48,7 @@ Once scaffolded, your project directory will look like this:
 
 ```text
 my-prototype/
-├── app/                 # Complete full-stack application (Laravel 12 + Vue 3 source code)
+├── app/                 # Complete full-stack application (Laravel 12 + Vue 3 TypeScript)
 ├── docker/              # Custom Dockerfiles (PHP 8.4 + Node.js LTS)
 └── compose.yaml         # Docker Compose multi-service definition
 
@@ -115,8 +115,8 @@ docker compose exec app npx shadcn-vue@latest add button
 
 ```
 
-2. **Use the components in your Inertia pages (`app/resources/js/Pages`):**
-   Components are scaffolded into `app/resources/js/components/ui/` allowing you total ownership over their styling.
+2. **Use components in Inertia pages (`app/resources/js/pages`):**
+   Components are scaffolded into `app/resources/js/components/ui/` allowing total ownership over styling.
 
 ---
 

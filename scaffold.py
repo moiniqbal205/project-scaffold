@@ -54,6 +54,30 @@ def check_docker():
         print("\n❌ Error: Docker or Docker Compose is not installed or not in your PATH.")
         sys.exit(1)
 
+def configure_vite_hmr(vite_config_path):
+    """Inject Docker HMR server settings into app/vite.config.ts if missing."""
+    if not vite_config_path.exists():
+        print(f"⚠️ Warning: {vite_config_path} not found. Skipping Vite HMR configuration.")
+        return
+
+    content = vite_config_path.read_text()
+    if "strictPort:" in content:
+        return
+
+    server_block = """    server: {
+        host: '0.0.0.0',
+        strictPort: true,
+        hmr: {
+            host: 'localhost',
+        },
+    },"""
+
+    # Inject server block into defineConfig({ ... })
+    if "defineConfig({" in content:
+        updated_content = content.replace("defineConfig({", f"defineConfig({{\n{server_block}")
+        vite_config_path.write_text(updated_content)
+        print("✔ Updated app/vite.config.ts with Docker HMR configuration.")
+
 def main():
     # 1. Prompt and strictly validate Project Name
     project_name = input("Enter project name (e.g., my-prototype): ").strip()
@@ -61,7 +85,6 @@ def main():
         print("Project name cannot be empty.")
         sys.exit(1)
 
-    # Strip invalid characters to prevent path/compose injection
     project_slug = re.sub(r'[^a-z0-9]+', '-', project_name.lower()).strip('-')
     if not project_slug:
         print("❌ Error: Invalid project name. Please use alphanumeric characters.")
@@ -109,7 +132,7 @@ WORKDIR /app
 """
     (docker_php_dir / "Dockerfile").write_text(dockerfile_content)
 
-    # 4. Write compose.yaml using identical Vite port mapping for HMR stability
+    # 4. Write compose.yaml
     print("Creating compose.yaml...")
     compose_content = f"""services:
   app:
@@ -145,33 +168,36 @@ volumes:
 """
     (root_dir / "compose.yaml").write_text(compose_content)
 
-    # 5. Build Container & Clone the Official Laravel Vue Starter Kit
-    print("\n🚀 Building app container and installing Laravel Vue Starter Kit...")
+    # 5. Build Container & Install Pinned Laravel Vue Starter Kit
+    print("\n🚀 Building app container and installing Laravel Vue Starter Kit (v1.0.2)...")
     run_cmd(["docker", "compose", "build", "app"], cwd=root_dir)
     
-    # Clone official Vue starter kit directly into the mounted app directory
-    run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "create-project", "laravel/vue-starter-kit", "."], cwd=root_dir)
+    # Run with --no-deps to avoid spinning up PostgreSQL unnecessarily during file generation
+    run_cmd([
+        "docker", "compose", "run", "--rm", "--no-deps", "app",
+        "composer", "create-project", "laravel/vue-starter-kit", ".", "1.0.2"
+    ], cwd=root_dir)
 
-    # 6. Configure app/.env
+    # 6. Configure app/.env and APP_KEY verification
     print("Configuring app/.env...")
     env_file = app_dir / ".env"
     env_example = app_dir / ".env.example"
 
-    # Ensure .env exists if starter kit only created .env.example
     if not env_file.exists() and env_example.exists():
         env_file.write_text(env_example.read_text())
 
-    if env_file.exists():
-        env_content = env_file.read_text()
-        
-        # Strip out ALL existing active or commented DB_, APP_URL, and VITE_PORT lines
-        clean_lines = [
-            line for line in env_content.splitlines()
-            if not re.match(r'^\s*#?\s*(DB_|APP_URL=|VITE_PORT=)', line)
-        ]
-        
-        # Append clean, explicit Docker settings
-        docker_env_block = f"""
+    if not env_file.exists():
+        print("❌ Error: Neither .env nor .env.example exists in app directory.")
+        sys.exit(1)
+
+    env_content = env_file.read_text()
+    
+    clean_lines = [
+        line for line in env_content.splitlines()
+        if not re.match(r'^\s*#?\s*(DB_|APP_URL=|VITE_PORT=)', line)
+    ]
+    
+    docker_env_block = f"""
 APP_URL=http://localhost:{app_port}
 VITE_PORT={vite_port}
 
@@ -182,8 +208,24 @@ DB_DATABASE={db_name}
 DB_USERNAME={db_name}
 DB_PASSWORD=local_dev_password
 """
-        final_env = "\n".join(clean_lines).strip() + "\n" + docker_env_block
-        env_file.write_text(final_env)
+    final_env = "\n".join(clean_lines).strip() + "\n" + docker_env_block
+    env_file.write_text(final_env)
+
+    # Ensure APP_KEY exists
+    env_lines = env_file.read_text().splitlines()
+    has_app_key = any(
+        line.startswith("APP_KEY=") and line.partition("=")[2].strip().strip('"').strip("'")
+        for line in env_lines
+    )
+    if not has_app_key:
+        print("🔑 Generating application encryption key...")
+        run_cmd([
+            "docker", "compose", "run", "--rm", "--no-deps", "app",
+            "php", "artisan", "key:generate", "--no-interaction"
+        ], cwd=root_dir)
+
+    # Configure Vite HMR in app/vite.config.ts
+    configure_vite_hmr(app_dir / "vite.config.ts")
 
     # 7. Start Stack & Initialize Migrations and Node Build Assets
     print("\n🐳 Starting Docker containers and running database migrations...")
