@@ -6,7 +6,7 @@ A robust, automated CLI-based scaffolding tool that provisions a fully-container
 
 ## 🛠️ Tech Stack
 
-- **Backend & Architecture:** Laravel 12 monolith running on PHP 8.4 CLI with server-side routing via **Inertia.js**.
+- **Full-Stack Application:** Laravel 12 monolith running on PHP 8.4 CLI with server-side routing via **Inertia.js**.
 - **Database:** PostgreSQL 17 optimized with container health checks and automatic persistent volume mapping.
 - **Frontend Ecosystem:** Vue 3, Vite, Tailwind CSS, pre-configured with the **shadcn-vue** component library setup.
 - **Orchestration:** Docker & Docker Compose with dynamic application and Vite port allocation.
@@ -34,7 +34,7 @@ A robust, automated CLI-based scaffolding tool that provisions a fully-container
 4. The script will automatically:
 * Scan for available localhost ports for the app and Vite.
 * Generate the isolated project structure.
-* Build the Docker images and clone the official Laravel Vue Starter Kit.
+* Build the Docker images and clone the official Laravel Vue Starter Kit into `./app`.
 * Configure local development environment variables (including local database credentials).
 * Run database migrations and compile initial build assets.
 
@@ -48,7 +48,7 @@ Once scaffolded, your project directory will look like this:
 
 ```text
 my-prototype/
-├── backend/             # Laravel 12 + Vue 3 source code (Inertia pages, controllers, components)
+├── app/                 # Complete full-stack application (Laravel 12 + Vue 3 source code)
 ├── docker/              # Custom Dockerfiles (PHP 8.4 + Node.js LTS)
 └── compose.yaml         # Docker Compose multi-service definition
 
@@ -97,7 +97,7 @@ docker compose exec app php artisan [command]
   _(Keep this running in a separate terminal window during development)_
 
 ```bash
-# Check your script terminal output or backend/.env for your assigned VITE_PORT
+# Check your script terminal output or app/.env for your assigned VITE_PORT
 docker compose exec app npm run dev -- --host 0.0.0.0 --port [VITE_PORT]
 
 ```
@@ -106,7 +106,7 @@ docker compose exec app npm run dev -- --host 0.0.0.0 --port [VITE_PORT]
 
 ## 🧩 Building with `shadcn-vue`
 
-Because this stack utilizes Laravel's new official Vue Starter Kit, the `shadcn-vue` baseline is ready out-of-the-box.
+Because this stack utilizes Laravel's official Vue Starter Kit, the `shadcn-vue` baseline is ready out-of-the-box.
 
 1. **Add desired components (e.g., Button, Table, Dialog):**
 
@@ -115,8 +115,8 @@ docker compose exec app npx shadcn-vue@latest add button
 
 ```
 
-2. **Use the components in your Inertia pages (`backend/resources/js/Pages`):**
-   Components are scaffolded into `backend/resources/js/components/ui/` allowing you total ownership over their styling.
+2. **Use the components in your Inertia pages (`app/resources/js/Pages`):**
+   Components are scaffolded into `app/resources/js/components/ui/` allowing you total ownership over their styling.
 
 ---
 

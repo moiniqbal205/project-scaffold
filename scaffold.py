@@ -86,10 +86,10 @@ def main():
 
     print(f"\n📂 Creating project directories for '{project_slug}'...")
     docker_php_dir = root_dir / "docker" / "php"
-    backend_dir = root_dir / "backend"
+    app_dir = root_dir / "app"
 
     docker_php_dir.mkdir(parents=True, exist_ok=True)
-    backend_dir.mkdir(parents=True, exist_ok=True)
+    app_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. Write docker/php/Dockerfile
     print("Creating docker/php/Dockerfile...")
@@ -117,7 +117,7 @@ WORKDIR /app
       context: ./docker/php
     working_dir: /app
     volumes:
-      - ./backend:/app
+      - ./app:/app
     ports:
       - "{app_port}:8000"
       - "{vite_port}:{vite_port}"
@@ -149,13 +149,13 @@ volumes:
     print("\n🚀 Building app container and installing Laravel Vue Starter Kit...")
     run_cmd(["docker", "compose", "build", "app"], cwd=root_dir)
     
-    # We use the new official Vue starter kit which includes shadcn-vue and Inertia directly
+    # Clone official Vue starter kit directly into the mounted app directory
     run_cmd(["docker", "compose", "run", "--rm", "app", "composer", "create-project", "laravel/vue-starter-kit", "."], cwd=root_dir)
 
-    # 6. Configure backend/.env
-    print("Configuring backend/.env...")
-    env_file = backend_dir / ".env"
-    env_example = backend_dir / ".env.example"
+    # 6. Configure app/.env
+    print("Configuring app/.env...")
+    env_file = app_dir / ".env"
+    env_example = app_dir / ".env.example"
 
     # Ensure .env exists if starter kit only created .env.example
     if not env_file.exists() and env_example.exists():
@@ -164,7 +164,7 @@ volumes:
     if env_file.exists():
         env_content = env_file.read_text()
         
-        # Strip out ALL existing active or commented DB_ and APP_URL lines
+        # Strip out ALL existing active or commented DB_, APP_URL, and VITE_PORT lines
         clean_lines = [
             line for line in env_content.splitlines()
             if not re.match(r'^\s*#?\s*(DB_|APP_URL=|VITE_PORT=)', line)
